@@ -1,0 +1,146 @@
+using System;
+using System.Diagnostics;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Collections.Generic;
+
+public class Aimbot
+{
+    private static bool isEnabled = false;
+    private static IntPtr processHandle;
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr OpenProcess(int dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool ReadProcessMemory(IntPtr hProcess, long lpBaseAddress, byte[] lpBuffer, int nSize, out int lpNumberOfBytesRead);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool WriteProcessMemory(IntPtr hProcess, long lpBaseAddress, byte[] lpBuffer, int nSize, out int lpNumberOfBytesWritten);
+
+    private const int PROCESS_ALL_ACCESS = 0x1F0FFF;
+
+    public static void Start()
+    {
+        Thread monitorKeys = new Thread(MonitorKeys);
+        monitorKeys.IsBackground = true;
+        monitorKeys.Start();
+    }
+
+    private static void MonitorKeys()
+    {
+        while (true)
+        {
+            if ((GetAsyncKeyState(0x77) & 0x8000) != 0) // F8
+            {
+                if (!isEnabled)
+                {
+                    isEnabled = true;
+                    InjectAimbot();
+                    Console.Beep(440, 300); // Enable sound
+                }
+            }
+            if ((GetAsyncKeyState(0x78) & 0x8000) != 0) // F9
+            {
+                if (isEnabled)
+                {
+                    isEnabled = false;
+                    StopAimbot();
+                    Console.Beep(240, 300); // Disable sound
+                }
+            }
+            Thread.Sleep(100);
+        }
+    }
+
+    private static void InjectAimbot()
+    {
+        var processes = Process.GetProcessesByName("HD-Player");
+        if (processes.Length == 0)
+        {
+            Debug.WriteLine("Emulator Not Found! Open Emulator First.");
+            return;
+        }
+
+        int procId = processes[0].Id;
+        processHandle = OpenProcess(PROCESS_ALL_ACCESS, false, procId);
+
+        if (processHandle == IntPtr.Zero)
+        {
+            Debug.WriteLine("Failed to open process.");
+            return;
+        }
+
+        // AoB Scan parameters
+        const long baseAddress = 0x0000000000010000;
+        const long maxAddress = 0x00007ffffffeffff;
+        const int bufferSize = 4096;
+        byte[] aobPattern = ConvertAoBToByteArray("FF FF FF FF FF FF FF FF 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 A5 43 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 00 00 00 00 ?? ?? ?? ?? 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 BF");
+
+        for (long address = baseAddress; address < maxAddress; address += bufferSize)
+        {
+            byte[] buffer = new byte[bufferSize];
+            ReadProcessMemory(processHandle, address, buffer, bufferSize, out _);
+
+            List<long> results = FindAoB(buffer, aobPattern, address);
+
+            foreach (var resultAddress in results)
+            {
+                long readAddress = resultAddress + 0x9C;
+                long writeAddress = resultAddress + 0x6C;
+
+                byte[] readBuffer = new byte[4];
+                ReadProcessMemory(processHandle, readAddress, readBuffer, readBuffer.Length, out _);
+
+                // Write the value read at `readAddress` to `writeAddress`
+                WriteProcessMemory(processHandle, writeAddress, readBuffer, readBuffer.Length, out _);
+
+                Debug.WriteLine($"Memory manipulated at: 0x{resultAddress:X}");
+            }
+        }
+    }
+
+    private static List<long> FindAoB(byte[] buffer, byte[] pattern, long startAddress)
+    {
+        var results = new List<long>();
+        for (int i = 0; i <= buffer.Length - pattern.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < pattern.Length; j++)
+            {
+                if (pattern[j] != 0x00 && buffer[i + j] != pattern[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+
+            if (match)
+                results.Add(startAddress + i);
+        }
+
+        return results;
+    }
+
+    private static byte[] ConvertAoBToByteArray(string aob)
+    {
+        return aob.Split(' ').Select(s => s == "??" ? (byte)0x00 : Convert.ToByte(s, 16)).ToArray();
+    }
+
+    private static void StopAimbot()
+    {
+        if (processHandle != IntPtr.Zero)
+        {
+            CloseHandle(processHandle);
+            processHandle = IntPtr.Zero;
+        }
+        Debug.WriteLine("Aimbot disabled.");
+    }
+}
